@@ -41,7 +41,7 @@ Before running the script, you need to configure the following constants at the 
 ### Required Configuration
 
 ```javascript
-const SHARED_DRIVE_FOLDER_ID = '1In9KsvISrVgIOMGkhbwQOXnyky4qsLmP';
+const SHARED_DRIVE_FOLDER_ID = 'YOUR_SHARED_DRIVE_FOLDER_ID_HERE';
 ```
 - **Description**: The ID of the Shared Drive folder where PDFs will be saved
 - **How to find**: 
@@ -177,7 +177,7 @@ To view detailed execution logs:
 
 - **Execution time**: Google Apps Script custom menu functions have a 6-minute maximum execution time
 - **File size**: Very large PDF files may cause timeouts during download
-- **Rate limiting**: Google's URL Fetch service has daily quotas
+- **Rate limiting**: Google's URL Fetch service has daily quotas (20,000 URL fetch calls per day for consumer accounts)
 - **Single-threaded**: URLs are processed sequentially, not in parallel
 
 ## Technical Details
