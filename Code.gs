@@ -59,6 +59,8 @@ function onOpen() {
  * Main function to download PDFs from URLs in the spreadsheet.
  * Reads URLs from URL_COLUMN starting at START_ROW, downloads each PDF,
  * saves it to the Shared Drive folder, and writes the shareable link to LINK_COLUMN.
+ * Supports incremental processing - skips rows that already have content in LINK_COLUMN,
+ * allowing the script to resume from where it left off if execution halts.
  */
 function downloadPDFs() {
   // Get the active spreadsheet and sheet
@@ -74,20 +76,34 @@ function downloadPDFs() {
     return;
   }
 
-  // Read all values from the URL column starting from START_ROW
-  const urlRange = sheet.getRange(START_ROW, columnLetterToIndex(URL_COLUMN), lastRow - START_ROW + 1, 1);
+  // Read all values from both URL_COLUMN and LINK_COLUMN starting from START_ROW
+  const urlColumnIndex = columnLetterToIndex(URL_COLUMN);
+  const linkColumnIndex = columnLetterToIndex(LINK_COLUMN);
+  const numRows = lastRow - START_ROW + 1;
+
+  const urlRange = sheet.getRange(START_ROW, urlColumnIndex, numRows, 1);
   const urlValues = urlRange.getValues();
 
-  Logger.log('Processing ' + urlValues.length + ' rows starting from row ' + START_ROW);
+  const linkRange = sheet.getRange(START_ROW, linkColumnIndex, numRows, 1);
+  const linkValues = linkRange.getValues();
+
+  Logger.log('Processing ' + numRows + ' rows starting from row ' + START_ROW);
 
   // Loop through each row and process non-empty URLs
   for (let i = 0; i < urlValues.length; i++) {
     const currentRow = START_ROW + i;
     const url = urlValues[i][0];
+    const existingLink = linkValues[i][0];
 
     // Skip empty cells
     if (!url || url.toString().trim() === '') {
       Logger.log('Row ' + currentRow + ': Skipping empty URL');
+      continue;
+    }
+
+    // Check if LINK_COLUMN already has content - if so, skip this row (resume capability)
+    if (existingLink && existingLink.toString().trim() !== '') {
+      Logger.log('Row ' + currentRow + ': Skipping already processed row (has link or error message)');
       continue;
     }
 
@@ -99,25 +115,30 @@ function downloadPDFs() {
 
       if (!extractedPdfUrl) {
         // Extraction failed - write error message to LINK_COLUMN
-        const linkCell = sheet.getRange(currentRow, columnLetterToIndex(LINK_COLUMN));
+        const linkCell = sheet.getRange(currentRow, linkColumnIndex);
         linkCell.setValue('Error: Failed to extract PDF URL from page');
-        Logger.log('Row ' + currentRow + ': Failed to extract PDF URL');
+        SpreadsheetApp.flush(); // Ensure data is written immediately
+        Logger.log('ERROR: Row ' + currentRow + ' - Failed to extract PDF URL from: ' + url);
+        // Continue processing remaining URLs (Requirement 2.4)
         continue;
       }
 
       // Save the extracted PDF URL to column D (same as LINK_COLUMN for now)
       // Note: This will be overwritten with the shareable link if download succeeds
-      const linkCell = sheet.getRange(currentRow, columnLetterToIndex(LINK_COLUMN));
+      const linkCell = sheet.getRange(currentRow, linkColumnIndex);
       linkCell.setValue(extractedPdfUrl);
+      SpreadsheetApp.flush(); // Ensure data is written immediately
       Logger.log('Row ' + currentRow + ': Extracted PDF URL: ' + extractedPdfUrl);
 
       // Download the PDF from the extracted URL
       const pdfBlob = downloadPDF(extractedPdfUrl);
 
       if (!pdfBlob) {
-        // Download failed - write error message to LINK_COLUMN
+        // Download failed - write error message to LINK_COLUMN (Requirement 2.3)
         linkCell.setValue('Error: Failed to download PDF');
-        Logger.log('Row ' + currentRow + ': Failed to download PDF');
+        SpreadsheetApp.flush(); // Ensure data is written immediately
+        Logger.log('ERROR: Row ' + currentRow + ' - Failed to download PDF from: ' + extractedPdfUrl);
+        // Continue processing remaining URLs (Requirement 2.4)
         continue;
       }
 
@@ -127,7 +148,9 @@ function downloadPDFs() {
       if (!savedFile) {
         // Save failed - write error message to LINK_COLUMN
         linkCell.setValue('Error: Failed to save PDF to Shared Drive');
-        Logger.log('Row ' + currentRow + ': Failed to save PDF to Shared Drive');
+        SpreadsheetApp.flush(); // Ensure data is written immediately
+        Logger.log('ERROR: Row ' + currentRow + ' - Failed to save PDF to Shared Drive for URL: ' + extractedPdfUrl);
+        // Continue processing remaining URLs (Requirement 2.4)
         continue;
       }
 
@@ -136,14 +159,19 @@ function downloadPDFs() {
 
       // Write the shareable link to LINK_COLUMN in the same row
       linkCell.setValue(shareableLink);
+      SpreadsheetApp.flush(); // Ensure data is written immediately
 
-      Logger.log('Row ' + currentRow + ': Successfully saved PDF and updated link');
+      Logger.log('Row ' + currentRow + ': Successfully saved PDF and updated link: ' + shareableLink);
 
     } catch (error) {
-      // Handle any unexpected errors
-      const linkCell = sheet.getRange(currentRow, columnLetterToIndex(LINK_COLUMN));
+      // Handle any unexpected errors (Requirement 7.4)
+      const linkCell = sheet.getRange(currentRow, linkColumnIndex);
       linkCell.setValue('Error: ' + error.message);
-      Logger.log('Row ' + currentRow + ': Unexpected error - ' + error.message);
+      SpreadsheetApp.flush(); // Ensure data is written immediately
+      Logger.log('ERROR: Row ' + currentRow + ' - Unexpected exception for URL: ' + url);
+      Logger.log('ERROR: ' + error.message);
+      Logger.log('Stack trace: ' + error.stack);
+      // Continue processing remaining URLs (Requirement 2.4)
     }
   }
 
@@ -192,7 +220,7 @@ function extractPDFUrl(pageUrl) {
 
     // Check if the request was successful
     if (responseCode !== 200) {
-      Logger.log('Failed to fetch page. HTTP status code: ' + responseCode);
+      Logger.log('ERROR: Failed to fetch page. HTTP status code: ' + responseCode + ' for URL: ' + pageUrl);
       return null;
     }
 
@@ -223,11 +251,12 @@ function extractPDFUrl(pageUrl) {
       return pdfUrl;
     }
 
-    Logger.log('No embed tag with type="application/pdf" found in the page');
+    Logger.log('ERROR: No embed tag with type="application/pdf" found in the page: ' + pageUrl);
     return null;
 
   } catch (error) {
-    Logger.log('Error extracting PDF URL: ' + error.message);
+    Logger.log('ERROR: Exception while extracting PDF URL from ' + pageUrl + ' - ' + error.message);
+    Logger.log('Stack trace: ' + error.stack);
     return null;
   }
 }
@@ -240,6 +269,8 @@ function extractPDFUrl(pageUrl) {
  */
 function downloadPDF(url) {
   try {
+    Logger.log('Attempting to download PDF from: ' + url);
+
     // Fetch the PDF from the URL with a 30-second timeout
     const options = {
       muteHttpExceptions: true,
@@ -253,7 +284,7 @@ function downloadPDF(url) {
 
     // Check if the request was successful (HTTP 200)
     if (responseCode !== 200) {
-      Logger.log('Failed to download PDF. HTTP status code: ' + responseCode);
+      Logger.log('ERROR: Failed to download PDF. HTTP status code: ' + responseCode + ' for URL: ' + url);
       return null;
     }
 
@@ -263,15 +294,17 @@ function downloadPDF(url) {
     // Verify that the content is a PDF
     const contentType = blob.getContentType();
     if (contentType !== 'application/pdf' && !contentType.includes('pdf')) {
-      Logger.log('Downloaded content is not a PDF. Content type: ' + contentType);
+      Logger.log('ERROR: Downloaded content is not a PDF. Content type: ' + contentType + ' for URL: ' + url);
       return null;
     }
 
+    Logger.log('Successfully downloaded PDF from: ' + url);
     return blob;
 
   } catch (error) {
-    // Handle network errors and timeouts
-    Logger.log('Error downloading PDF: ' + error.message);
+    // Handle network errors and timeouts (Requirement 2.3, 2.4)
+    Logger.log('ERROR: Exception while downloading PDF from ' + url + ' - ' + error.message);
+    Logger.log('Stack trace: ' + error.stack);
     return null;
   }
 }
@@ -286,6 +319,8 @@ function downloadPDF(url) {
  */
 function savePDFToSharedDrive(blob, url, folderId) {
   try {
+    Logger.log('Attempting to save PDF to Shared Drive folder: ' + folderId);
+
     // Get the Shared Drive folder by ID
     const folder = DriveApp.getFolderById(folderId);
 
@@ -298,12 +333,14 @@ function savePDFToSharedDrive(blob, url, folderId) {
     // Create the file in the Shared Drive folder
     const file = folder.createFile(blob);
 
-    Logger.log('Successfully saved PDF: ' + filename);
+    Logger.log('Successfully saved PDF: ' + filename + ' (File ID: ' + file.getId() + ')');
     return file;
 
   } catch (error) {
     // Handle errors (e.g., invalid folder ID, permission issues)
-    Logger.log('Error saving PDF to Shared Drive: ' + error.message);
+    Logger.log('ERROR: Failed to save PDF to Shared Drive for URL: ' + url);
+    Logger.log('ERROR: ' + error.message);
+    Logger.log('Stack trace: ' + error.stack);
     return null;
   }
 }

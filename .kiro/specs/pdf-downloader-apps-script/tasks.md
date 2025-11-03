@@ -54,7 +54,7 @@
   - Keep existing download and save logic
   - _Requirements: 1.5, 2.1, 4.1_
 
-- [ ] 9. Add error handling and logging
+- [x] 9. Add error handling and logging
   - Wrap download and save operations in try-catch blocks
   - Log errors to console with row number and URL
   - Continue processing remaining URLs after errors
@@ -65,3 +65,11 @@
   - Add custom menu to spreadsheet UI using SpreadsheetApp.getUi().createMenu()
   - Add menu item that triggers downloadPDFs() function
   - _Requirements: 6.1, 6.2, 6.3_
+
+- [x] 11. Implement incremental processing with resume capability
+  - Modify main function to write results to spreadsheet immediately after each row completes
+  - Check if LINK_COLUMN already has content before processing each row
+  - Skip rows that already have a link or error message in LINK_COLUMN
+  - Allow script to resume from the first unprocessed row if execution halts
+  - Use SpreadsheetApp.flush() after each row update to ensure data is written
+  - _Requirements: 1.4, 1.5, 4.1_
