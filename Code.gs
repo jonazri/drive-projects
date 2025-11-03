@@ -1,0 +1,358 @@
+/**
+ * PDF Downloader for Google Sheets
+ *
+ * This script reads PDF URLs from a specified column in the active sheet,
+ * downloads each PDF, saves it to a Google Shared Drive folder, and writes
+ * the shareable link back to an adjacent column.
+ */
+
+// ============================================================================
+// CONFIGURATION CONSTANTS
+// ============================================================================
+
+/**
+ * The ID of the Shared Drive folder where PDFs will be saved.
+ * To find this ID, open the folder in Google Drive and copy the ID from the URL:
+ * https://drive.google.com/drive/folders/[FOLDER_ID_HERE]
+ */
+const SHARED_DRIVE_FOLDER_ID = '1In9KsvISrVgIOMGkhbwQOXnyky4qsLmP';
+
+/**
+ * The column letter containing the PDF URLs to download.
+ * Example: 'A' for column A, 'C' for column C, etc.
+ */
+const URL_COLUMN = 'C';
+
+/**
+ * The column letter where shareable links to saved PDFs will be written.
+ * This should typically be the column adjacent to URL_COLUMN.
+ * Example: 'B' for column B, 'D' for column D, etc.
+ */
+const LINK_COLUMN = 'D';
+
+/**
+ * The row number to start processing URLs from.
+ * Set to 2 to skip the header row, or adjust based on your sheet structure.
+ */
+const START_ROW = 2;
+
+// ============================================================================
+// MENU SETUP
+// ============================================================================
+
+/**
+ * Creates a custom menu in the spreadsheet when it opens.
+ * This function runs automatically when the spreadsheet is opened.
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('PDF Downloader')
+      .addItem('Download PDFs', 'downloadPDFs')
+      .addToUi();
+}
+
+// ============================================================================
+// MAIN FUNCTION
+// ============================================================================
+
+/**
+ * Main function to download PDFs from URLs in the spreadsheet.
+ * Reads URLs from URL_COLUMN starting at START_ROW, downloads each PDF,
+ * saves it to the Shared Drive folder, and writes the shareable link to LINK_COLUMN.
+ */
+function downloadPDFs() {
+  // Get the active spreadsheet and sheet
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = spreadsheet.getActiveSheet();
+
+  // Get the last row with content in the URL column
+  const lastRow = sheet.getLastRow();
+
+  // If there are no rows to process, exit early
+  if (lastRow < START_ROW) {
+    Logger.log('No URLs to process. Sheet has no data starting from row ' + START_ROW);
+    return;
+  }
+
+  // Read all values from the URL column starting from START_ROW
+  const urlRange = sheet.getRange(START_ROW, columnLetterToIndex(URL_COLUMN), lastRow - START_ROW + 1, 1);
+  const urlValues = urlRange.getValues();
+
+  Logger.log('Processing ' + urlValues.length + ' rows starting from row ' + START_ROW);
+
+  // Loop through each row and process non-empty URLs
+  for (let i = 0; i < urlValues.length; i++) {
+    const currentRow = START_ROW + i;
+    const url = urlValues[i][0];
+
+    // Skip empty cells
+    if (!url || url.toString().trim() === '') {
+      Logger.log('Row ' + currentRow + ': Skipping empty URL');
+      continue;
+    }
+
+    Logger.log('Row ' + currentRow + ': Processing URL: ' + url);
+
+    try {
+      // Extract the actual PDF URL from the embed wrapper page
+      const extractedPdfUrl = extractPDFUrl(url);
+
+      if (!extractedPdfUrl) {
+        // Extraction failed - write error message to LINK_COLUMN
+        const linkCell = sheet.getRange(currentRow, columnLetterToIndex(LINK_COLUMN));
+        linkCell.setValue('Error: Failed to extract PDF URL from page');
+        Logger.log('Row ' + currentRow + ': Failed to extract PDF URL');
+        continue;
+      }
+
+      // Save the extracted PDF URL to column D (same as LINK_COLUMN for now)
+      // Note: This will be overwritten with the shareable link if download succeeds
+      const linkCell = sheet.getRange(currentRow, columnLetterToIndex(LINK_COLUMN));
+      linkCell.setValue(extractedPdfUrl);
+      Logger.log('Row ' + currentRow + ': Extracted PDF URL: ' + extractedPdfUrl);
+
+      // Download the PDF from the extracted URL
+      const pdfBlob = downloadPDF(extractedPdfUrl);
+
+      if (!pdfBlob) {
+        // Download failed - write error message to LINK_COLUMN
+        linkCell.setValue('Error: Failed to download PDF');
+        Logger.log('Row ' + currentRow + ': Failed to download PDF');
+        continue;
+      }
+
+      // Save the PDF to Shared Drive
+      const savedFile = savePDFToSharedDrive(pdfBlob, extractedPdfUrl, SHARED_DRIVE_FOLDER_ID);
+
+      if (!savedFile) {
+        // Save failed - write error message to LINK_COLUMN
+        linkCell.setValue('Error: Failed to save PDF to Shared Drive');
+        Logger.log('Row ' + currentRow + ': Failed to save PDF to Shared Drive');
+        continue;
+      }
+
+      // Get the shareable link from the saved file
+      const shareableLink = savedFile.getUrl();
+
+      // Write the shareable link to LINK_COLUMN in the same row
+      linkCell.setValue(shareableLink);
+
+      Logger.log('Row ' + currentRow + ': Successfully saved PDF and updated link');
+
+    } catch (error) {
+      // Handle any unexpected errors
+      const linkCell = sheet.getRange(currentRow, columnLetterToIndex(LINK_COLUMN));
+      linkCell.setValue('Error: ' + error.message);
+      Logger.log('Row ' + currentRow + ': Unexpected error - ' + error.message);
+    }
+  }
+
+  Logger.log('Finished processing URLs');
+}
+
+/**
+ * Helper function to convert column letter to column index (1-based).
+ * Example: 'A' -> 1, 'B' -> 2, 'Z' -> 26, 'AA' -> 27
+ */
+function columnLetterToIndex(letter) {
+  let column = 0;
+  const length = letter.length;
+  for (let i = 0; i < length; i++) {
+    column += (letter.charCodeAt(i) - 64) * Math.pow(26, length - i - 1);
+  }
+  return column;
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Extracts the actual PDF URL from an embed wrapper page.
+ * Fetches the page HTML, parses it to find the embed tag with type="application/pdf",
+ * and extracts the src attribute value.
+ *
+ * @param {string} pageUrl - The URL of the wrapper page containing the embedded PDF
+ * @returns {string|null} The extracted PDF URL if found, null otherwise
+ */
+function extractPDFUrl(pageUrl) {
+  try {
+    Logger.log('Extracting PDF URL from: ' + pageUrl);
+
+    // Fetch the page HTML
+    const options = {
+      muteHttpExceptions: true,
+      validateHttpsCertificates: true,
+      followRedirects: true,
+      timeout: 30000 // 30 seconds timeout
+    };
+
+    const response = UrlFetchApp.fetch(pageUrl, options);
+    const responseCode = response.getResponseCode();
+
+    // Check if the request was successful
+    if (responseCode !== 200) {
+      Logger.log('Failed to fetch page. HTTP status code: ' + responseCode);
+      return null;
+    }
+
+    // Get the HTML content
+    const html = response.getContentText();
+
+    // Parse HTML to find the embed tag with type="application/pdf"
+    // Using regex to find: <embed ... type="application/pdf" ... src="..." ...>
+    // This regex looks for embed tags with type="application/pdf" and extracts the src attribute
+    const embedRegex = /<embed[^>]*type=["']application\/pdf["'][^>]*src=["']([^"']+)["'][^>]*>/i;
+    const embedRegexAlt = /<embed[^>]*src=["']([^"']+)["'][^>]*type=["']application\/pdf["'][^>]*>/i;
+
+    let match = html.match(embedRegex);
+    if (!match) {
+      match = html.match(embedRegexAlt);
+    }
+
+    if (match && match[1]) {
+      let pdfUrl = match[1];
+
+      // Handle protocol-relative URLs (starting with //)
+      if (pdfUrl.startsWith('//')) {
+        pdfUrl = 'https:' + pdfUrl;
+        Logger.log('Converted protocol-relative URL to: ' + pdfUrl);
+      }
+
+      Logger.log('Successfully extracted PDF URL: ' + pdfUrl);
+      return pdfUrl;
+    }
+
+    Logger.log('No embed tag with type="application/pdf" found in the page');
+    return null;
+
+  } catch (error) {
+    Logger.log('Error extracting PDF URL: ' + error.message);
+    return null;
+  }
+}
+
+/**
+ * Downloads a PDF from the specified URL.
+ *
+ * @param {string} url - The URL of the PDF to download
+ * @returns {Blob|null} The PDF blob if successful, null if download fails
+ */
+function downloadPDF(url) {
+  try {
+    // Fetch the PDF from the URL with a 30-second timeout
+    const options = {
+      muteHttpExceptions: true,
+      validateHttpsCertificates: true,
+      followRedirects: true,
+      timeout: 30000 // 30 seconds timeout as per requirement 2.5
+    };
+
+    const response = UrlFetchApp.fetch(url, options);
+    const responseCode = response.getResponseCode();
+
+    // Check if the request was successful (HTTP 200)
+    if (responseCode !== 200) {
+      Logger.log('Failed to download PDF. HTTP status code: ' + responseCode);
+      return null;
+    }
+
+    // Get the blob from the response
+    const blob = response.getBlob();
+
+    // Verify that the content is a PDF
+    const contentType = blob.getContentType();
+    if (contentType !== 'application/pdf' && !contentType.includes('pdf')) {
+      Logger.log('Downloaded content is not a PDF. Content type: ' + contentType);
+      return null;
+    }
+
+    return blob;
+
+  } catch (error) {
+    // Handle network errors and timeouts
+    Logger.log('Error downloading PDF: ' + error.message);
+    return null;
+  }
+}
+
+/**
+ * Saves a PDF blob to the specified Shared Drive folder.
+ *
+ * @param {Blob} blob - The PDF blob to save
+ * @param {string} url - The original URL (used for filename generation)
+ * @param {string} folderId - The ID of the Shared Drive folder
+ * @returns {GoogleAppsScript.Drive.File|null} The saved File object if successful, null if save fails
+ */
+function savePDFToSharedDrive(blob, url, folderId) {
+  try {
+    // Get the Shared Drive folder by ID
+    const folder = DriveApp.getFolderById(folderId);
+
+    // Generate a filename from the URL
+    const filename = getFileName(url);
+
+    // Set the blob name to the generated filename
+    blob.setName(filename);
+
+    // Create the file in the Shared Drive folder
+    const file = folder.createFile(blob);
+
+    Logger.log('Successfully saved PDF: ' + filename);
+    return file;
+
+  } catch (error) {
+    // Handle errors (e.g., invalid folder ID, permission issues)
+    Logger.log('Error saving PDF to Shared Drive: ' + error.message);
+    return null;
+  }
+}
+
+/**
+ * Generates a filename for the PDF based on the URL or timestamp.
+ * Ensures the filename has a .pdf extension and handles special characters.
+ *
+ * @param {string} url - The URL to extract filename from
+ * @returns {string} A valid filename with .pdf extension
+ */
+function getFileName(url) {
+  try {
+    // Try to extract filename from URL
+    // Remove query parameters and fragments
+    let cleanUrl = url.split('?')[0].split('#')[0];
+
+    // Get the last part of the URL path
+    const urlParts = cleanUrl.split('/');
+    let filename = urlParts[urlParts.length - 1];
+
+    // If filename is empty or doesn't look like a file, use timestamp
+    if (!filename || filename.length === 0 || filename.indexOf('.') === -1) {
+      filename = 'pdf_' + new Date().getTime() + '.pdf';
+    } else {
+      // Clean up special characters (keep only alphanumeric, dots, hyphens, underscores)
+      filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+
+      // Ensure .pdf extension
+      if (!filename.toLowerCase().endsWith('.pdf')) {
+        // Remove any existing extension and add .pdf
+        const lastDotIndex = filename.lastIndexOf('.');
+        if (lastDotIndex > 0) {
+          filename = filename.substring(0, lastDotIndex) + '.pdf';
+        } else {
+          filename = filename + '.pdf';
+        }
+      }
+    }
+
+    // Handle potential duplicate filenames by checking if file exists
+    // Note: Apps Script will automatically handle duplicates by creating a new file
+    // with the same name (Google Drive allows duplicate names)
+
+    return filename;
+
+  } catch (error) {
+    // If anything goes wrong, fall back to timestamp-based name
+    Logger.log('Error generating filename, using timestamp: ' + error.message);
+    return 'pdf_' + new Date().getTime() + '.pdf';
+  }
+}
