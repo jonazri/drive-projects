@@ -97,3 +97,18 @@ This feature provides a Google Apps Script solution that automates the process o
 3. IF the Source Column is empty or invalid, THEN THE PDF Downloader Script SHALL display an error message and halt execution
 4. WHEN an error occurs during processing, THE PDF Downloader Script SHALL log the error details to the Apps Script execution log
 5. THE PDF Downloader Script SHALL provide user-friendly error messages in the spreadsheet UI using toast notifications or alerts
+
+### Requirement 8
+
+**User Story:** As a spreadsheet user processing large datasets, I want the script to automatically handle Google Apps Script execution time limits, so that all my PDFs are downloaded without manual intervention
+
+#### Acceptance Criteria
+
+1. THE PDF Downloader Script SHALL monitor elapsed execution time during processing
+2. WHEN elapsed execution time reaches 5 minutes, THE PDF Downloader Script SHALL stop processing new rows
+3. WHEN the PDF Downloader Script stops due to time limits, THE PDF Downloader Script SHALL create a time-based trigger to continue processing
+4. THE time-based trigger SHALL execute the PDF Downloader Script within 10 seconds of the previous execution stopping
+5. WHEN the PDF Downloader Script resumes via trigger, THE PDF Downloader Script SHALL continue from the first unprocessed row
+6. WHEN all rows are processed, THE PDF Downloader Script SHALL delete any remaining continuation triggers
+7. THE PDF Downloader Script SHALL allow configuration of the maximum execution time threshold and continuation delay
+8. THE PDF Downloader Script SHALL log time-based continuation events to the execution log

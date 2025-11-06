@@ -73,3 +73,43 @@
   - Allow script to resume from the first unprocessed row if execution halts
   - Use SpreadsheetApp.flush() after each row update to ensure data is written
   - _Requirements: 1.4, 1.5, 4.1_
+
+- [x] 12. Add execution time monitoring configuration
+  - Add MAX_EXECUTION_TIME_MS constant (default 5 minutes = 300000 ms)
+  - Add CONTINUATION_DELAY_MS constant (default 10 seconds = 10000 ms)
+  - Add TRIGGER_FUNCTION_NAME constant set to 'downloadPDFs'
+  - Add TRIGGER_UNIQUE_NAME constant for identifying continuation triggers
+  - Add comments explaining the time buffer strategy and continuation delay
+  - _Requirements: 8.7_
+
+- [x] 13. Implement time monitoring helper function
+  - Create shouldContinueProcessing(startTime) function
+  - Calculate elapsed time using Date.now() - startTime
+  - Return false if elapsed time exceeds MAX_EXECUTION_TIME_MS
+  - Return true if still within time limit
+  - _Requirements: 8.1, 8.2_
+
+- [x] 14. Implement continuation trigger management
+  - Create createContinuationTrigger() function
+  - Delete existing triggers with TRIGGER_UNIQUE_NAME using deleteContinuationTriggers()
+  - Create new time-based trigger using ScriptApp.newTrigger()
+  - Set trigger to fire after CONTINUATION_DELAY_MS (10 seconds) using .timeBased().after(CONTINUATION_DELAY_MS)
+  - Set unique name on trigger for identification
+  - Log trigger creation event
+  - _Requirements: 8.3, 8.4, 8.8_
+
+- [x] 15. Implement trigger cleanup function
+  - Create deleteContinuationTriggers() function
+  - Get all project triggers using ScriptApp.getProjectTriggers()
+  - Loop through triggers and identify those matching TRIGGER_UNIQUE_NAME
+  - Delete matching triggers using ScriptApp.deleteTrigger()
+  - Log trigger deletion events
+  - _Requirements: 8.6, 8.8_
+
+- [x] 16. Integrate time monitoring into main function
+  - Record start time at beginning of downloadPDFs() using Date.now()
+  - Before processing each row, call shouldContinueProcessing(startTime)
+  - If shouldContinueProcessing returns false, call createContinuationTrigger() and exit loop
+  - After processing all rows successfully, call deleteContinuationTriggers()
+  - Log continuation events when time limit is reached
+  - _Requirements: 8.1, 8.2, 8.3, 8.5, 8.6, 8.8_

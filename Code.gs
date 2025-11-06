@@ -36,6 +36,35 @@ const LINK_COLUMN = 'D';
  */
 const START_ROW = 2;
 
+/**
+ * Maximum execution time in milliseconds before creating a continuation trigger.
+ * Set to 5 minutes (300000 ms) to leave a 1-minute buffer before the 6-minute
+ * Google Apps Script execution time limit. This ensures the script can gracefully
+ * exit and schedule a continuation before being forcefully terminated.
+ */
+const MAX_EXECUTION_TIME_MS = 5 * 60 * 1000; // 5 minutes = 300000 ms
+
+/**
+ * Delay in milliseconds before the continuation trigger fires.
+ * Set to 10 seconds (10000 ms) to allow a brief pause between script executions,
+ * preventing rapid consecutive runs and allowing time for any pending operations
+ * to complete.
+ */
+const CONTINUATION_DELAY_MS = 10 * 1000; // 10 seconds = 10000 ms
+
+/**
+ * The name of the function to call when the continuation trigger fires.
+ * This should match the main function name that processes PDFs.
+ */
+const TRIGGER_FUNCTION_NAME = 'downloadPDFs';
+
+/**
+ * Unique identifier for continuation triggers created by this script.
+ * Used to identify and manage triggers that should be cleaned up when
+ * processing is complete or when creating new continuation triggers.
+ */
+const TRIGGER_UNIQUE_NAME = 'PDF_DOWNLOADER_CONTINUATION';
+
 // ============================================================================
 // MENU SETUP
 // ============================================================================
@@ -61,8 +90,13 @@ function onOpen() {
  * saves it to the Shared Drive folder, and writes the shareable link to LINK_COLUMN.
  * Supports incremental processing - skips rows that already have content in LINK_COLUMN,
  * allowing the script to resume from where it left off if execution halts.
+ * Includes automatic time monitoring to handle Google Apps Script execution time limits.
  */
 function downloadPDFs() {
+  // Record start time for execution time monitoring (Requirement 8.1)
+  const startTime = Date.now();
+  Logger.log('Starting PDF download process at: ' + new Date(startTime).toISOString());
+
   // Get the active spreadsheet and sheet
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = spreadsheet.getActiveSheet();
@@ -73,6 +107,8 @@ function downloadPDFs() {
   // If there are no rows to process, exit early
   if (lastRow < START_ROW) {
     Logger.log('No URLs to process. Sheet has no data starting from row ' + START_ROW);
+    // Clean up any continuation triggers since there's nothing to process (Requirement 8.6)
+    deleteContinuationTriggers();
     return;
   }
 
@@ -91,6 +127,19 @@ function downloadPDFs() {
 
   // Loop through each row and process non-empty URLs
   for (let i = 0; i < urlValues.length; i++) {
+    // Check if we should continue processing based on elapsed time (Requirement 8.2)
+    if (!shouldContinueProcessing(startTime)) {
+      const elapsedTime = Date.now() - startTime;
+      Logger.log('CONTINUATION: Execution time limit approaching (' + (elapsedTime / 1000) + ' seconds elapsed)');
+      Logger.log('CONTINUATION: Stopping at row ' + (START_ROW + i) + ' to avoid timeout');
+      Logger.log('CONTINUATION: Creating trigger to resume processing in ' + (CONTINUATION_DELAY_MS / 1000) + ' seconds');
+
+      // Create a continuation trigger to resume processing (Requirement 8.3)
+      createContinuationTrigger();
+
+      // Exit the loop gracefully (Requirement 8.5)
+      return;
+    }
     const currentRow = START_ROW + i;
     const url = urlValues[i][0];
     const existingLink = linkValues[i][0];
@@ -175,6 +224,9 @@ function downloadPDFs() {
     }
   }
 
+  // All rows processed successfully - clean up any continuation triggers (Requirement 8.6)
+  Logger.log('All rows processed successfully');
+  deleteContinuationTriggers();
   Logger.log('Finished processing URLs');
 }
 
@@ -391,5 +443,95 @@ function getFileName(url) {
     // If anything goes wrong, fall back to timestamp-based name
     Logger.log('Error generating filename, using timestamp: ' + error.message);
     return 'pdf_' + new Date().getTime() + '.pdf';
+  }
+}
+
+// ============================================================================
+// TIME MONITORING FUNCTIONS
+// ============================================================================
+
+/**
+ * Checks if the script should continue processing based on elapsed execution time.
+ * Returns false if the elapsed time exceeds MAX_EXECUTION_TIME_MS, indicating
+ * that the script should stop processing and create a continuation trigger.
+ *
+ * @param {number} startTime - The timestamp (from Date.now()) when processing started
+ * @returns {boolean} True if processing should continue, false if time limit exceeded
+ */
+function shouldContinueProcessing(startTime) {
+  const elapsedTime = Date.now() - startTime;
+  return elapsedTime < MAX_EXECUTION_TIME_MS;
+}
+
+/**
+ * Creates a time-based trigger to continue processing after a delay.
+ * Deletes any existing continuation triggers before creating a new one to avoid
+ * duplicate triggers. The trigger will fire after CONTINUATION_DELAY_MS (10 seconds)
+ * and call the function specified in TRIGGER_FUNCTION_NAME.
+ *
+ * This function is called when the script approaches the execution time limit
+ * and needs to schedule a continuation to process remaining rows.
+ */
+function createContinuationTrigger() {
+  try {
+    Logger.log('Creating continuation trigger to resume processing in ' + (CONTINUATION_DELAY_MS / 1000) + ' seconds');
+
+    // Delete any existing continuation triggers first to avoid duplicates
+    deleteContinuationTriggers();
+
+    // Create a new time-based trigger to fire after CONTINUATION_DELAY_MS
+    const trigger = ScriptApp.newTrigger(TRIGGER_FUNCTION_NAME)
+        .timeBased()
+        .after(CONTINUATION_DELAY_MS)
+        .create();
+
+    // Set a unique name on the trigger for identification
+    // Note: Apps Script doesn't support setting custom names directly on triggers,
+    // but we can identify them by their handler function name and use a consistent
+    // naming convention in our trigger management logic
+
+    Logger.log('Continuation trigger created successfully. Trigger ID: ' + trigger.getUniqueId());
+    Logger.log('Script will resume processing in ' + (CONTINUATION_DELAY_MS / 1000) + ' seconds');
+
+  } catch (error) {
+    Logger.log('ERROR: Failed to create continuation trigger - ' + error.message);
+    Logger.log('Stack trace: ' + error.stack);
+  }
+}
+
+/**
+ * Deletes all continuation triggers created by this script.
+ * Identifies triggers by matching the handler function name (TRIGGER_FUNCTION_NAME)
+ * and removes them to prevent duplicate executions.
+ *
+ * This function is called:
+ * 1. Before creating a new continuation trigger (to avoid duplicates)
+ * 2. When all processing is complete (to clean up)
+ */
+function deleteContinuationTriggers() {
+  try {
+    // Get all project triggers
+    const triggers = ScriptApp.getProjectTriggers();
+    let deletedCount = 0;
+
+    // Loop through triggers and delete those matching our function name
+    for (let i = 0; i < triggers.length; i++) {
+      const trigger = triggers[i];
+
+      // Check if this trigger calls our download function (indicating it's a continuation trigger)
+      if (trigger.getHandlerFunction() === TRIGGER_FUNCTION_NAME) {
+        ScriptApp.deleteTrigger(trigger);
+        deletedCount++;
+        Logger.log('Deleted continuation trigger with ID: ' + trigger.getUniqueId());
+      }
+    }
+
+    if (deletedCount > 0) {
+      Logger.log('Deleted ' + deletedCount + ' continuation trigger(s)');
+    }
+
+  } catch (error) {
+    Logger.log('ERROR: Failed to delete continuation triggers - ' + error.message);
+    Logger.log('Stack trace: ' + error.stack);
   }
 }

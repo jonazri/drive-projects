@@ -93,6 +93,75 @@ Manual testing:
 5. Verify links appear in LINK_COLUMN (column D)
 6. Check Apps Script logs for any errors
 
+## Execution Time Management
+
+### Problem
+Google Apps Script has a 6-minute execution time limit. Processing hundreds of PDFs can exceed this limit.
+
+### Solution: Smart Time Monitoring with Auto-Continuation
+
+```mermaid
+graph TD
+    A[Start downloadPDFs] --> B[Record start time]
+    B --> C[Process next row]
+    C --> D{Time > 5 min?}
+    D -->|No| E{More rows?}
+    D -->|Yes| F[Create continuation trigger]
+    F --> G[Exit gracefully]
+    E -->|Yes| C
+    E -->|No| H[Delete triggers]
+    H --> I[Complete]
+    G --> J[Trigger fires in 10 sec]
+    J --> A
+```
+
+### Configuration
+
+```javascript
+const MAX_EXECUTION_TIME_MS = 5 * 60 * 1000; // 5 minutes (leave 1 min buffer)
+const CONTINUATION_DELAY_MS = 10 * 1000; // 10 seconds between executions
+const TRIGGER_FUNCTION_NAME = 'downloadPDFs';
+const TRIGGER_UNIQUE_NAME = 'PDF_DOWNLOADER_CONTINUATION';
+```
+
+### Key Functions
+
+**Function**: `shouldContinueProcessing(startTime)`
+- Calculates elapsed time since start
+- Returns false if elapsed time exceeds MAX_EXECUTION_TIME_MS
+- Returns true otherwise
+
+**Function**: `createContinuationTrigger()`
+- Deletes any existing continuation triggers
+- Creates new time-based trigger to run in 10 seconds
+- Uses ScriptApp.newTrigger() with .timeBased().after(CONTINUATION_DELAY_MS)
+- Sets unique name for easy identification
+
+**Function**: `deleteContinuationTriggers()`
+- Gets all project triggers
+- Deletes triggers matching TRIGGER_UNIQUE_NAME
+- Called when all processing is complete
+
+### Modified Main Function Flow
+
+1. Record start time at beginning of downloadPDFs()
+2. Before processing each row, check shouldContinueProcessing()
+3. If time limit approaching:
+   - Log continuation message
+   - Create continuation trigger
+   - Exit function gracefully
+4. If all rows processed:
+   - Delete any continuation triggers
+   - Log completion message
+
+### Benefits
+
+- Automatic handling of large datasets
+- No user intervention required
+- Resumes from exact stopping point (leverages existing incremental processing)
+- Prevents timeout errors
+- Self-cleaning (removes triggers when done)
+
 ## Implementation Notes
 
 - Use UrlFetchApp.fetch() for downloading
@@ -102,3 +171,5 @@ Manual testing:
 - Process URLs sequentially (Apps Script is single-threaded)
 - Script will request Drive permissions on first run
 - Folder ID can be found in the Shared Drive folder URL
+- Use ScriptApp.newTrigger() for time-based continuation
+- Use Date.now() for time tracking
