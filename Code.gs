@@ -58,13 +58,6 @@ const CONTINUATION_DELAY_MS = 10 * 1000; // 10 seconds = 10000 ms
  */
 const TRIGGER_FUNCTION_NAME = 'downloadPDFs';
 
-/**
- * Unique identifier for continuation triggers created by this script.
- * Used to identify and manage triggers that should be cleaned up when
- * processing is complete or when creating new continuation triggers.
- */
-const TRIGGER_UNIQUE_NAME = 'PDF_DOWNLOADER_CONTINUATION';
-
 // ============================================================================
 // MENU SETUP
 // ============================================================================
