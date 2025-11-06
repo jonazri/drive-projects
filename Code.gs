@@ -58,6 +58,13 @@ const CONTINUATION_DELAY_MS = 10 * 1000; // 10 seconds = 10000 ms
  */
 const TRIGGER_FUNCTION_NAME = 'downloadPDFs';
 
+/**
+ * Property key used to store continuation trigger IDs in script properties.
+ * This allows us to track and manage only the triggers created by this script
+ * for continuation purposes, without affecting user-created triggers.
+ */
+const CONTINUATION_TRIGGER_PROPERTY_KEY = 'PDF_DOWNLOADER_CONTINUATION_TRIGGERS';
+
 // ============================================================================
 // MENU SETUP
 // ============================================================================
@@ -214,6 +221,20 @@ function downloadPDFs() {
       Logger.log('ERROR: ' + error.message);
       Logger.log('Stack trace: ' + error.stack);
       // Continue processing remaining URLs (Requirement 2.4)
+    }
+
+    // Check time after processing each row to ensure we don't timeout mid-operation
+    if (!shouldContinueProcessing(startTime)) {
+      const elapsedTime = Date.now() - startTime;
+      Logger.log('CONTINUATION: Execution time limit approaching after processing row ' + currentRow);
+      Logger.log('CONTINUATION: Elapsed time: ' + (elapsedTime / 1000) + ' seconds');
+      Logger.log('CONTINUATION: Creating trigger to resume processing in ' + (CONTINUATION_DELAY_MS / 1000) + ' seconds');
+
+      // Create a continuation trigger to resume processing (Requirement 8.3)
+      createContinuationTrigger();
+
+      // Exit the loop gracefully (Requirement 8.5)
+      return;
     }
   }
 
@@ -478,10 +499,13 @@ function createContinuationTrigger() {
         .after(CONTINUATION_DELAY_MS)
         .create();
 
-    // Set a unique name on the trigger for identification
-    // Note: Apps Script doesn't support setting custom names directly on triggers,
-    // but we can identify them by their handler function name and use a consistent
-    // naming convention in our trigger management logic
+    // Store the trigger ID in script properties so we can identify and clean up
+    // only our continuation triggers without affecting user-created triggers
+    const properties = PropertiesService.getScriptProperties();
+    const existingTriggers = properties.getProperty(CONTINUATION_TRIGGER_PROPERTY_KEY);
+    const triggerIds = existingTriggers ? JSON.parse(existingTriggers) : [];
+    triggerIds.push(trigger.getUniqueId());
+    properties.setProperty(CONTINUATION_TRIGGER_PROPERTY_KEY, JSON.stringify(triggerIds));
 
     Logger.log('Continuation trigger created successfully. Trigger ID: ' + trigger.getUniqueId());
     Logger.log('Script will resume processing in ' + (CONTINUATION_DELAY_MS / 1000) + ' seconds');
@@ -494,8 +518,8 @@ function createContinuationTrigger() {
 
 /**
  * Deletes all continuation triggers created by this script.
- * Identifies triggers by matching the handler function name (TRIGGER_FUNCTION_NAME)
- * and removes them to prevent duplicate executions.
+ * Uses script properties to identify only the triggers created for continuation purposes,
+ * ensuring that user-created triggers calling the same function are not affected.
  *
  * This function is called:
  * 1. Before creating a new continuation trigger (to avoid duplicates)
@@ -503,21 +527,32 @@ function createContinuationTrigger() {
  */
 function deleteContinuationTriggers() {
   try {
-    // Get all project triggers
-    const triggers = ScriptApp.getProjectTriggers();
+    const properties = PropertiesService.getScriptProperties();
+    const storedTriggers = properties.getProperty(CONTINUATION_TRIGGER_PROPERTY_KEY);
+
+    if (!storedTriggers) {
+      Logger.log('No continuation triggers to delete');
+      return;
+    }
+
+    const triggerIds = JSON.parse(storedTriggers);
+    const allTriggers = ScriptApp.getProjectTriggers();
     let deletedCount = 0;
 
-    // Loop through triggers and delete those matching our function name
-    for (let i = 0; i < triggers.length; i++) {
-      const trigger = triggers[i];
+    // Delete only triggers whose IDs are stored in our property
+    for (let i = 0; i < allTriggers.length; i++) {
+      const trigger = allTriggers[i];
+      const triggerId = trigger.getUniqueId();
 
-      // Check if this trigger calls our download function (indicating it's a continuation trigger)
-      if (trigger.getHandlerFunction() === TRIGGER_FUNCTION_NAME) {
+      if (triggerIds.includes(triggerId)) {
         ScriptApp.deleteTrigger(trigger);
         deletedCount++;
-        Logger.log('Deleted continuation trigger with ID: ' + trigger.getUniqueId());
+        Logger.log('Deleted continuation trigger with ID: ' + triggerId);
       }
     }
+
+    // Clear the stored trigger IDs
+    properties.deleteProperty(CONTINUATION_TRIGGER_PROPERTY_KEY);
 
     if (deletedCount > 0) {
       Logger.log('Deleted ' + deletedCount + ' continuation trigger(s)');
