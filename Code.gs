@@ -209,17 +209,25 @@ function getPDFUrl(url, row, sheet, pdfLinkColumnIndex) {
     pdfUrl = url;
     Logger.log('Row ' + row + ': Using direct PDF URL (DIRECT_MODE)');
   } else {
-    const isDirect = isDirectPDFUrl(url);
-
-    if (isDirect) {
+    // First check for .pdf extension to avoid unnecessary network calls
+    if (typeof url === 'string' && url.trim().toLowerCase().split('?')[0].split('#')[0].endsWith('.pdf')) {
       pdfUrl = url;
-      Logger.log('Row ' + row + ': Detected direct PDF URL');
+      Logger.log('Row ' + row + ': Detected direct PDF URL by extension');
     } else {
-      Logger.log('Row ' + row + ': Detected wrapper page, extracting PDF URL');
-      pdfUrl = extractPDFUrl(url);
+      const isDirect = isDirectPDFUrl(url);
 
-      if (pdfUrl) {
-        Logger.log('Row ' + row + ': Extracted PDF URL: ' + pdfUrl);
+      if (isDirect) {
+        pdfUrl = url;
+        Logger.log('Row ' + row + ': Detected direct PDF URL');
+      } else {
+        Logger.log('Row ' + row + ': Detected wrapper page, extracting PDF URL');
+        pdfUrl = extractPDFUrl(url);
+
+        if (pdfUrl) {
+          Logger.log('Row ' + row + ': Extracted PDF URL: ' + pdfUrl);
+        } else {
+          Logger.log('Row ' + row + ': Failed to extract PDF URL from wrapper page: ' + url);
+        }
       }
     }
   }
@@ -276,6 +284,7 @@ function isDirectPDFUrl(url) {
       timeout: 10000
     });
 
+    // Only check headers for successful (200) responses
     if (response.getResponseCode() === 200) {
       const headers = response.getHeaders();
       const contentType = headers['Content-Type'] || headers['content-type'] || '';
