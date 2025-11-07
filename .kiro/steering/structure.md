@@ -19,15 +19,20 @@
 The script follows a top-down organization:
 
 1. **File header** - JSDoc comment describing the script
-2. **Configuration constants** - User-configurable settings (SHARED_DRIVE_FOLDER_ID, URL_COLUMN, LINK_COLUMN, START_ROW)
+2. **Configuration constants** - User-configurable settings (SHARED_DRIVE_FOLDER_ID, URL_COLUMN, PDF_LINK_COLUMN, DRIVE_LINK_COLUMN, START_ROW, MAX_EXECUTION_TIME_MS, CONTINUATION_DELAY_MS, DIRECT_MODE)
 3. **Menu setup** - `onOpen()` function for custom spreadsheet menu
-4. **Main function** - `downloadPDFs()` orchestrates the entire workflow
+4. **Main function** - `downloadPDFs()` orchestrates the entire workflow with time monitoring
 5. **Helper functions** - Modular functions for specific tasks:
    - `columnLetterToIndex()` - column letter to index conversion
+   - `isDirectPDFUrl()` - automatic detection of direct PDF URLs via HEAD requests
    - `extractPDFUrl()` - HTML parsing to extract embedded PDF URLs
    - `downloadPDF()` - URL fetching and blob retrieval
    - `savePDFToSharedDrive()` - Drive file creation
    - `getFileName()` - filename generation from URLs
+6. **Time monitoring functions** - Execution time management:
+   - `shouldContinueProcessing()` - checks elapsed time against limit
+   - `createContinuationTrigger()` - schedules automatic resumption
+   - `deleteContinuationTriggers()` - cleanup when processing complete
 
 ## Conventions
 

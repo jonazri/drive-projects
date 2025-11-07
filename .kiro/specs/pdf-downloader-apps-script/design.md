@@ -10,15 +10,24 @@ A simple Google Apps Script that reads URLs from column A, downloads PDFs, saves
 
 ```mermaid
 graph TD
-    A[Run script] --> B[Get active sheet]
-    B --> C[Read URLs from column A]
+    A[Run script] --> B[Get/restore active sheet]
+    B --> C[Read URLs from URL_COLUMN]
     C --> D[For each URL]
-    D --> E[Download PDF]
-    E --> F[Save to Shared Drive]
-    F --> G[Write link to column B]
-    G --> H{More URLs?}
-    H -->|Yes| D
-    H -->|No| I[Done]
+    D --> E{Direct PDF?}
+    E -->|Yes| F[Use URL directly]
+    E -->|No| G[Extract PDF URL from embed]
+    F --> H[Write PDF URL to PDF_LINK_COLUMN]
+    G --> H
+    H --> I[Download PDF]
+    I --> J[Save to Shared Drive]
+    J --> K[Write Drive link to DRIVE_LINK_COLUMN]
+    K --> L{Time limit?}
+    L -->|Yes| M[Create continuation trigger]
+    L -->|No| N{More URLs?}
+    N -->|Yes| D
+    N -->|No| O[Clean up triggers]
+    M --> P[Exit]
+    O --> P
 ```
 
 ### Script Structure
@@ -34,23 +43,47 @@ Single file with:
 
 ```javascript
 const SHARED_DRIVE_FOLDER_ID = 'your-folder-id-here';
-const URL_COLUMN = 'C';        // Column containing PDF URLs
-const LINK_COLUMN = 'D';       // Column to write shareable links
-const START_ROW = 2;           // Skip header row
+const URL_COLUMN = 'C';           // Column containing PDF URLs or wrapper page URLs
+const PDF_LINK_COLUMN = 'D';      // Column to write extracted PDF URLs
+const DRIVE_LINK_COLUMN = 'E';    // Column to write Drive shareable links
+const START_ROW = 2;              // Skip header row
+const DIRECT_MODE = false;        // true = URLs are direct PDFs, false = URLs are wrapper pages
 ```
 
 ### Main Function
 
 **Function**: `downloadPDFs()`
-- Gets active sheet
+- Gets or restores active sheet (using PropertiesService for trigger-based execution)
+- Stores sheet name in script properties for continuation
 - Reads URLs from URL_COLUMN starting at START_ROW
 - For each URL:
+  - Checks if already processed (DRIVE_LINK_COLUMN has content)
+  - Detects if URL is direct PDF or wrapper page
+  - If direct PDF: uses URL as-is
+  - If wrapper page: extracts PDF URL from embed tag
+  - Writes extracted PDF URL to PDF_LINK_COLUMN
   - Downloads PDF using UrlFetchApp
   - Saves to Shared Drive folder
-  - Writes shareable link to LINK_COLUMN
+  - Writes shareable link to DRIVE_LINK_COLUMN
+  - Checks execution time after each row
+- Creates continuation trigger if time limit approached
+- Cleans up triggers when complete
 - Logs errors to console
 
 ### Helper Functions
+
+**Function**: `isDirectPDFUrl(url)`
+- Performs HEAD request to check Content-Type header
+- Returns true if Content-Type is application/pdf
+- Falls back to checking .pdf extension
+- Returns false if detection fails (triggers embed extraction)
+
+**Function**: `extractPDFUrl(url)`
+- Fetches wrapper page HTML
+- Parses for embed tag with type="application/pdf"
+- Extracts src attribute
+- Handles protocol-relative URLs
+- Returns extracted PDF URL or null
 
 **Function**: `downloadPDF(url)`
 - Uses UrlFetchApp.fetch() to get PDF
@@ -67,14 +100,22 @@ const START_ROW = 2;           // Skip header row
 
 ## Data Flow
 
-1. Read all values from URL_COLUMN (starting at START_ROW)
-2. Loop through each URL
-3. Skip empty cells
-4. Download PDF blob from URL
-5. Save blob to Shared Drive folder
-6. Get shareable link from saved file
-7. Write link to LINK_COLUMN in same row
-8. On error: log to console and continue to next URL
+1. Get or restore active sheet (check PropertiesService for stored sheet name)
+2. Store sheet name in script properties for continuation
+3. Read all values from URL_COLUMN and DRIVE_LINK_COLUMN (starting at START_ROW)
+4. Loop through each URL
+5. Skip empty cells
+6. Skip rows where DRIVE_LINK_COLUMN already has content (resume capability)
+7. Detect if URL is direct PDF (HEAD request + Content-Type check)
+8. If direct PDF: use URL as-is; if wrapper: extract PDF URL from embed tag
+9. Write extracted/direct PDF URL to PDF_LINK_COLUMN
+10. Download PDF blob from PDF URL
+11. Save blob to Shared Drive folder
+12. Get shareable link from saved file
+13. Write Drive link to DRIVE_LINK_COLUMN in same row
+14. Check execution time; create continuation trigger if needed
+15. On error: log to console and continue to next URL
+16. Clean up triggers when all rows processed
 
 ## Error Handling
 
@@ -92,6 +133,86 @@ Manual testing:
 4. Verify PDFs appear in Shared Drive folder
 5. Verify links appear in LINK_COLUMN (column D)
 6. Check Apps Script logs for any errors
+
+## Sheet Persistence for Trigger-Based Continuation
+
+### Problem
+When a time-based trigger fires, `getActiveSheet()` may not return the correct sheet since there's no active user session.
+
+### Solution: PropertiesService for Sheet Name Persistence
+
+```javascript
+// At start of downloadPDFs()
+const properties = PropertiesService.getScriptProperties();
+let sheet;
+
+// Check if we're resuming from a trigger
+const storedSheetName = properties.getProperty('ACTIVE_SHEET_NAME');
+if (storedSheetName) {
+  sheet = spreadsheet.getSheetByName(storedSheetName);
+  if (!sheet) {
+    Logger.log('ERROR: Stored sheet "' + storedSheetName + '" not found');
+    properties.deleteProperty('ACTIVE_SHEET_NAME');
+    return;
+  }
+} else {
+  // First run - get active sheet and store name
+  sheet = spreadsheet.getActiveSheet();
+  properties.setProperty('ACTIVE_SHEET_NAME', sheet.getName());
+}
+
+// After all processing complete
+properties.deleteProperty('ACTIVE_SHEET_NAME');
+```
+
+### Benefits
+- Ensures continuation triggers process the same sheet
+- Handles both user-initiated and trigger-initiated executions
+- Self-cleaning (removes property when done)
+
+## Automatic PDF URL Detection
+
+### Problem
+Users may have mixed URL types: some direct PDF links, some wrapper pages with embeds.
+
+### Solution: Smart Detection with HEAD Requests
+
+```javascript
+function isDirectPDFUrl(url) {
+  try {
+    // Perform HEAD request to check Content-Type
+    const response = UrlFetchApp.fetch(url, {
+      method: 'head',
+      muteHttpExceptions: true,
+      followRedirects: true
+    });
+
+    const contentType = response.getHeaders()['Content-Type'];
+    if (contentType && contentType.includes('application/pdf')) {
+      return true;
+    }
+
+    // Fallback: check file extension
+    return url.toLowerCase().endsWith('.pdf');
+
+  } catch (error) {
+    // On error, assume wrapper page (safer default)
+    return false;
+  }
+}
+```
+
+### Flow
+1. For each URL, call `isDirectPDFUrl()`
+2. If true: use URL directly, skip extraction
+3. If false: call `extractPDFUrl()` to parse embed tag
+4. Write result to PDF_LINK_COLUMN regardless of source
+
+### Benefits
+- No manual configuration needed
+- Handles mixed URL types in same sheet
+- Graceful fallback on detection failure
+- Minimal performance impact (HEAD requests are fast)
 
 ## Execution Time Management
 
@@ -164,12 +285,17 @@ const TRIGGER_UNIQUE_NAME = 'PDF_DOWNLOADER_CONTINUATION';
 
 ## Implementation Notes
 
-- Use UrlFetchApp.fetch() for downloading
+- Use UrlFetchApp.fetch() for downloading and HEAD requests
 - Use DriveApp.getFolderById() to access Shared Drive folder
 - Use folder.createFile() to save PDFs
 - Use file.getUrl() to get shareable link
+- Use PropertiesService.getScriptProperties() to persist sheet name between executions
 - Process URLs sequentially (Apps Script is single-threaded)
 - Script will request Drive permissions on first run
 - Folder ID can be found in the Shared Drive folder URL
 - Use ScriptApp.newTrigger() for time-based continuation
 - Use Date.now() for time tracking
+- HEAD requests should use muteHttpExceptions: true for graceful fallback
+- Check Content-Type header for 'application/pdf' to detect direct PDFs
+- Store sheet name at start of execution, retrieve on trigger-based continuation
+- Clear sheet name from properties after successful completion

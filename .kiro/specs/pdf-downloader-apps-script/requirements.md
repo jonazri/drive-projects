@@ -112,3 +112,43 @@ This feature provides a Google Apps Script solution that automates the process o
 6. WHEN all rows are processed, THE PDF Downloader Script SHALL delete any remaining continuation triggers
 7. THE PDF Downloader Script SHALL allow configuration of the maximum execution time threshold and continuation delay
 8. THE PDF Downloader Script SHALL log time-based continuation events to the execution log
+9. THE PDF Downloader Script SHALL persist the active sheet name using PropertiesService between trigger-based executions
+10. WHEN triggered by a time-based trigger, THE PDF Downloader Script SHALL retrieve the sheet name from script properties and process that specific sheet
+
+### Requirement 9
+
+**User Story:** As a spreadsheet user, I want to see both the extracted PDF URL and the final Drive link in separate columns, so that I can verify the extraction worked correctly and access the saved file
+
+#### Acceptance Criteria
+
+1. THE PDF Downloader Script SHALL write extracted PDF URLs to a dedicated PDF Link Column
+2. THE PDF Downloader Script SHALL write Drive shareable links to a separate Drive Link Column
+3. THE PDF Downloader Script SHALL preserve the extracted PDF URL when writing the Drive link
+4. THE PDF Downloader Script SHALL allow configuration of both PDF Link Column and Drive Link Column separately
+5. WHEN resuming processing, THE PDF Downloader Script SHALL check the Drive Link Column to determine if a row has been processed
+
+### Requirement 10
+
+**User Story:** As a spreadsheet user with direct PDF URLs, I want the script to handle both wrapper pages and direct PDF links, so that I don't need to manually extract URLs first
+
+#### Acceptance Criteria
+
+1. THE PDF Downloader Script SHALL provide a DIRECT_MODE configuration option
+2. WHEN DIRECT_MODE is true, THE PDF Downloader Script SHALL use URLs from the Source Column directly as PDF URLs
+3. WHEN DIRECT_MODE is false, THE PDF Downloader Script SHALL extract PDF URLs from embed tags in wrapper pages
+4. THE PDF Downloader Script SHALL allow users to toggle between direct and wrapper page modes via configuration
+5. THE PDF Downloader Script SHALL document the DIRECT_MODE setting with clear comments explaining both modes
+
+### Requirement 11
+
+**User Story:** As a spreadsheet user with mixed URL types, I want the script to automatically detect whether a URL is a direct PDF or wrapper page, so that I don't need to configure modes or separate my data
+
+#### Acceptance Criteria
+
+1. THE PDF Downloader Script SHALL automatically detect if a URL points directly to a PDF file
+2. THE PDF Downloader Script SHALL perform a HEAD request to check the Content-Type header for PDF detection
+3. IF the Content-Type header indicates application/pdf, THEN THE PDF Downloader Script SHALL treat the URL as a direct PDF link
+4. IF the URL ends with .pdf extension, THEN THE PDF Downloader Script SHALL treat the URL as a direct PDF link
+5. IF automatic detection indicates a direct PDF, THEN THE PDF Downloader Script SHALL skip the embed tag extraction step
+6. IF automatic detection indicates a wrapper page, THEN THE PDF Downloader Script SHALL extract the PDF URL from embed tags
+7. THE PDF Downloader Script SHALL handle HEAD request failures gracefully and fall back to embed tag extraction
